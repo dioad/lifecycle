@@ -231,6 +231,13 @@ func (a *App) Failed() <-chan error {
 	return a.failed
 }
 
+// Ready is Readiness().Ready. Together with Live it lets an App be passed as a
+// single health source, for example to dioad/net's Server.AddHealthSource,
+// which then serves /health/live from Live and /health/ready from Ready.
+func (a *App) Ready(ctx context.Context) (any, error) {
+	return a.readiness.Ready(ctx)
+}
+
 // Live returns nil while every started service that implements Liveness
 // reports live, and otherwise the errors of those that do not, each naming its
 // service.
