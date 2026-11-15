@@ -274,6 +274,26 @@ func TestApp_Live_NamesTheServicesThatAreNotLive(t *testing.T) {
 	assert.NotContains(t, err.Error(), "good")
 }
 
+func TestApp_IsAHealthSourceOnItsOwn(t *testing.T) {
+	t.Parallel()
+	var _ interface {
+		Live(context.Context) error
+		Ready(context.Context) (any, error)
+	} = (*App)(nil)
+
+	app := New()
+	svc := newFailingService("store", &eventLog{})
+	svc.ready = errors.New("replica behind")
+	require.NoError(t, app.Add("store", svc))
+	require.NoError(t, app.Start(t.Context()))
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+
+	_, err := app.Ready(t.Context())
+
+	require.ErrorContains(t, err, "replica behind")
+	require.NoError(t, app.Live(t.Context()))
+}
+
 func TestApp_ServiceReadinessIsACheckOfThatName(t *testing.T) {
 	t.Parallel()
 	app := New()
