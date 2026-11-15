@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// defaultStopTimeout is the overall stop deadline when WithStopTimeout is not
-// given.
-const defaultStopTimeout = 30 * time.Second
+// DefaultStopBudget is how long stopping the services may take, after the
+// drain delay, when neither WithStopBudget nor WithStopTimeout is given.
+const DefaultStopBudget = 30 * time.Second
 
 // Stage is a set of services that Stop stops concurrently.
 type Stage struct {
@@ -21,6 +21,11 @@ type Stage struct {
 	// not returned by then has its Shutdown context cancelled, and the next
 	// stage starts. It is inside the overall stop deadline.
 	Budget time.Duration
+	// Optional lets Names include services that were not added, which the
+	// stage skips. Use it for a service that exists only in some
+	// configurations, such as a management listener. Without it a name that is
+	// not a service is an error, so a typo is caught when the App starts.
+	Optional bool
 }
 
 // Option configures an App.
@@ -32,11 +37,24 @@ func WithDrainDelay(d time.Duration) Option {
 	return func(a *App) { a.drainDelay = d }
 }
 
-// WithStopTimeout sets the deadline for draining and stopping together. The
-// default is 30 seconds. Zero or less means no deadline other than the
-// context given to Stop.
+// WithStopBudget sets how long stopping the services may take, after the drain
+// delay: the deadline for draining and stopping together is the drain delay
+// plus this. The default is DefaultStopBudget (30 seconds). Zero or less means
+// no deadline other than the context given to Stop. WithStopTimeout, if also
+// given, takes precedence.
+func WithStopBudget(d time.Duration) Option {
+	return func(a *App) { a.stopBudget = d }
+}
+
+// WithStopTimeout sets the deadline for draining and stopping together, drain
+// delay included. It takes precedence over WithStopBudget. Zero or less means
+// no deadline other than the context given to Stop. Prefer WithStopBudget,
+// which does not have to be changed when the drain delay is.
 func WithStopTimeout(d time.Duration) Option {
-	return func(a *App) { a.stopTimeout = d }
+	return func(a *App) {
+		a.stopTimeout = d
+		a.stopTimeoutSet = true
+	}
 }
 
 // WithStopStages sets the stages Stop stops services in. See the package
@@ -48,10 +66,12 @@ func WithStopStages(stages ...Stage) Option {
 // App starts, watches and stops a set of services. See the package
 // documentation.
 type App struct {
-	drainDelay  time.Duration
-	stopTimeout time.Duration
-	stages      []Stage
-	readiness   *Readiness
+	drainDelay     time.Duration
+	stopBudget     time.Duration
+	stopTimeout    time.Duration
+	stopTimeoutSet bool
+	stages         []Stage
+	readiness      *Readiness
 
 	// op serialises Start and Stop; mu guards the fields below.
 	op sync.Mutex
@@ -81,9 +101,9 @@ type entry struct {
 // New returns an App with no services.
 func New(opts ...Option) *App {
 	a := &App{
-		stopTimeout: defaultStopTimeout,
-		readiness:   NewReadiness(),
-		done:        make(chan struct{}),
+		stopBudget: DefaultStopBudget,
+		readiness:  NewReadiness(),
+		done:       make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -304,13 +324,27 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
-// stopContext returns ctx with the stop timeout applied.
+// stopDeadline returns the time allowed for draining and stopping together,
+// or zero for no limit.
+func (a *App) stopDeadline() time.Duration {
+	switch {
+	case a.stopTimeoutSet:
+		return a.stopTimeout
+	case a.stopBudget <= 0:
+		return 0
+	default:
+		return a.drainDelay + a.stopBudget
+	}
+}
+
+// stopContext returns ctx with the stop deadline applied.
 func (a *App) stopContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if a.stopTimeout <= 0 {
+	d := a.stopDeadline()
+	if d <= 0 {
 		return ctx, func() {}
 	}
 
-	return context.WithTimeout(ctx, a.stopTimeout)
+	return context.WithTimeout(ctx, d)
 }
 
 // validateStages checks that every stage names registered services, once.
@@ -318,7 +352,7 @@ func (a *App) validateStages(entries []*entry) error {
 	seen := map[string]bool{}
 	for _, stage := range a.stages {
 		for _, name := range stage.Names {
-			if !slices.ContainsFunc(entries, func(e *entry) bool { return e.name == name }) {
+			if !stage.Optional && !slices.ContainsFunc(entries, func(e *entry) bool { return e.name == name }) {
 				return fmt.Errorf("lifecycle: stop stage names %q, which is not a service", name)
 			}
 			if seen[name] {

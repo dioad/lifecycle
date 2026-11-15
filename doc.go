@@ -37,7 +37,9 @@
 //
 // Stop stops services in stages. A stage is a set of services stopped
 // concurrently, optionally within a budget; the stages run one after another,
-// all within one overall deadline (WithStopTimeout). With no stages
+// all within one overall deadline: the drain delay plus the stop budget
+// (WithStopBudget, 30 seconds by default). A stage marked Optional may name
+// services that were not added. With no stages
 // configured every service is its own stage, stopped in reverse registration
 // order. A service that no stage names is stopped after the stages, in reverse
 // registration order. Errors are combined with errors.Join.
@@ -61,5 +63,12 @@
 // returned (the start gate) and not ready once draining. In between it runs
 // its named checks. A check can be cached for a time to live, and can report
 // itself degraded, in which case the process stays ready and the check is
-// reported.
+// reported (or WithDegraded). A check runs under a timeout (WithCheckTimeout, 5 seconds by
+// default), so a wedged dependency fails the probe instead of hanging it.
+//
+// # Helpers
+//
+// StopFunc adapts a function to a Service that only has something to release on
+// stop, such as a database. Workers runs background goroutines for the life of
+// the App: they keep running while it drains and stop when their stage does.
 package lifecycle

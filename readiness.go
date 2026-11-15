@@ -71,8 +71,21 @@ func NewReadiness(opts ...ReadinessOption) *Readiness {
 	return r
 }
 
+// DefaultCheckTimeout is how long a check may run before its context is
+// cancelled, unless WithCheckTimeout says otherwise.
+const DefaultCheckTimeout = 5 * time.Second
+
 // CheckOption configures a check added with AddCheck.
 type CheckOption func(*check)
+
+// WithCheckTimeout bounds how long the check may run. When it expires the
+// check's context is cancelled, so a wedged dependency fails the probe quickly
+// instead of hanging the load balancer's request. The default is
+// DefaultCheckTimeout; zero or less removes the limit. The check must return
+// when its context is done.
+func WithCheckTimeout(d time.Duration) CheckOption {
+	return func(c *check) { c.timeout = d }
+}
 
 // WithCacheTTL caches the check's result for ttl, so that a health probe that
 // arrives every second does not query a database every second. A result is
@@ -82,9 +95,16 @@ func WithCacheTTL(ttl time.Duration) CheckOption {
 	return func(c *check) { c.ttl = ttl }
 }
 
+// WithDegraded reports the check's failures as degradations: the check is
+// reported, but the process stays ready. Use it for a dependency the process
+// can run without. It is the same as the check returning Degraded(err).
+func WithDegraded() CheckOption {
+	return func(c *check) { c.degraded = true }
+}
+
 // AddCheck adds a named check. Checks run in the order they were added.
 func (r *Readiness) AddCheck(name string, fn CheckFunc, opts ...CheckOption) {
-	c := &check{name: name, fn: fn}
+	c := &check{name: name, fn: fn, timeout: DefaultCheckTimeout}
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -160,9 +180,11 @@ func isDegraded(err error) bool {
 
 // check is one named CheckFunc and its cached result.
 type check struct {
-	name string
-	fn   CheckFunc
-	ttl  time.Duration
+	name     string
+	fn       CheckFunc
+	ttl      time.Duration
+	timeout  time.Duration
+	degraded bool
 
 	mu     sync.Mutex
 	cached bool
@@ -180,7 +202,17 @@ func (c *check) run(ctx context.Context, now func() time.Time) error {
 		return c.err
 	}
 
-	err := c.fn(ctx)
+	runCtx := ctx
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+
+	err := c.fn(runCtx)
+	if err != nil && c.degraded {
+		err = Degraded(err)
+	}
 	if c.ttl > 0 && ctx.Err() == nil {
 		c.cached, c.at, c.err = true, now(), err
 	}

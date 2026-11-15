@@ -403,3 +403,51 @@ func TestApp_Drain_WaitsForTheDelayOrTheContext(t *testing.T) {
 		within(t, func() { app.Drain(ctx) })
 	})
 }
+
+func TestApp_StopDeadline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts []Option
+		want time.Duration
+	}{
+		{"default is the default budget", nil, DefaultStopBudget},
+		{"the budget is on top of the drain delay", []Option{WithDrainDelay(5 * time.Second)}, 5*time.Second + DefaultStopBudget},
+		{"an explicit budget", []Option{WithStopBudget(10 * time.Second), WithDrainDelay(5 * time.Second)}, 15 * time.Second},
+		{"no budget means no deadline", []Option{WithStopBudget(0)}, 0},
+		{"the stop timeout includes the drain delay and wins", []Option{WithStopBudget(10 * time.Second), WithDrainDelay(5 * time.Second), WithStopTimeout(7 * time.Second)}, 7 * time.Second},
+		{"a zero stop timeout means no deadline", []Option{WithStopTimeout(0)}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, New(tt.opts...).stopDeadline())
+		})
+	}
+}
+
+func TestApp_Stop_AnOptionalStageSkipsAServiceThatWasNotAdded(t *testing.T) {
+	t.Parallel()
+	log := &eventLog{}
+	app := newApp(t, log, []Option{WithStopStages(
+		Stage{Names: []string{"api"}},
+		Stage{Names: []string{"management"}, Optional: true},
+	)}, "store", "api")
+	require.NoError(t, app.Start(t.Context()))
+
+	require.NoError(t, app.Stop(t.Context()))
+
+	assert.Equal(t, []string{"stop api", "stop store"}, log.snapshot()[2:])
+}
+
+func TestApp_Start_AnOptionalStageStillRejectsAServiceInTwoStages(t *testing.T) {
+	t.Parallel()
+	app := newApp(t, &eventLog{}, []Option{WithStopStages(
+		Stage{Names: []string{"api"}},
+		Stage{Names: []string{"api"}, Optional: true},
+	)}, "api")
+
+	require.ErrorContains(t, app.Start(t.Context()), "more than one stop stage")
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/dioad/lifecycle"
@@ -124,4 +125,46 @@ func ExampleReadiness() {
 	// search degraded: status=map[db:ok search:degraded: slow] err=<nil>
 	// db down: status=map[db:failed: connection refused search:degraded: slow] err=db: connection refused
 	// draining: status=<nil> err=draining
+}
+
+// StopFunc releases a resource that has nothing to start. Added first, the store
+// is the last thing to stop; Workers keeps background goroutines running
+// through the drain and stops them when their turn comes.
+func ExampleStopFunc() {
+	app := lifecycle.New()
+	_ = app.Add("store", lifecycle.StopFunc(func(context.Context) error {
+		fmt.Println("close store")
+
+		return nil
+	}))
+	_ = app.Add("worker", lifecycle.NewWorkers(func(ctx context.Context, wg *sync.WaitGroup) error {
+		wg.Go(func() {
+			<-ctx.Done()
+			fmt.Println("worker stopped")
+		})
+
+		return nil
+	}))
+
+	_ = app.Start(context.Background())
+	_ = app.Stop(context.Background())
+	// Output:
+	// worker stopped
+	// close store
+}
+
+// A stage that is marked Optional may name a service that exists only in some
+// configurations, here a management listener that was not configured.
+func ExampleStage_optional() {
+	app := lifecycle.New(lifecycle.WithStopStages(
+		lifecycle.Stage{Names: []string{"api"}},
+		lifecycle.Stage{Names: []string{"management"}, Optional: true},
+	))
+	_ = app.Add("api", printer{name: "api"})
+
+	_ = app.Start(context.Background())
+	_ = app.Stop(context.Background())
+	// Output:
+	// start api
+	// stop api
 }

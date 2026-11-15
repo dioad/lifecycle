@@ -147,3 +147,67 @@ func TestReadiness_DoesNotCacheAResultFromACancelledProbe(t *testing.T) {
 	require.NoError(t, err, "the next probe runs the check again")
 	assert.Equal(t, int32(2), runs.Load())
 }
+
+func TestReadiness_ACheckIsBoundedByItsTimeout(t *testing.T) {
+	t.Parallel()
+	r := NewReadiness()
+	r.AddCheck("wedged", func(ctx context.Context) error {
+		<-ctx.Done()
+
+		return ctx.Err()
+	}, WithCheckTimeout(20*time.Millisecond))
+	r.MarkStarted()
+
+	status, err := r.Ready(t.Context())
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Equal(t, map[string]string{"wedged": "failed: context deadline exceeded"}, status)
+}
+
+func TestReadiness_ACheckTimeoutOfZeroRemovesTheLimit(t *testing.T) {
+	t.Parallel()
+	var sawDeadline bool
+	r := NewReadiness()
+	r.AddCheck("unbounded", func(ctx context.Context) error {
+		_, sawDeadline = ctx.Deadline()
+
+		return nil
+	}, WithCheckTimeout(0))
+	r.MarkStarted()
+
+	_, err := r.Ready(t.Context())
+
+	require.NoError(t, err)
+	assert.False(t, sawDeadline)
+}
+
+func TestReadiness_ACheckHasTheDefaultTimeoutUnlessTold(t *testing.T) {
+	t.Parallel()
+	var deadline time.Time
+	r := NewReadiness()
+	r.AddCheck("default", func(ctx context.Context) error {
+		deadline, _ = ctx.Deadline()
+
+		return nil
+	})
+	r.MarkStarted()
+
+	before := time.Now()
+	_, err := r.Ready(t.Context())
+
+	require.NoError(t, err)
+	assert.WithinDuration(t, before.Add(DefaultCheckTimeout), deadline, time.Second)
+}
+
+func TestReadiness_WithDegradedReportsFailureWithoutFailingReadiness(t *testing.T) {
+	t.Parallel()
+	r := NewReadiness()
+	r.AddCheck("search", func(context.Context) error { return errBoom }, WithDegraded())
+	r.AddCheck("db", func(context.Context) error { return nil })
+	r.MarkStarted()
+
+	status, err := r.Ready(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"search": "degraded: boom", "db": "ok"}, status)
+}
