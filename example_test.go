@@ -127,6 +127,22 @@ func ExampleReadiness() {
 	// draining: status=<nil> err=draining
 }
 
+// A dependency the process can run without, such as a message broker, is added
+// with AddDependencyCheck: when it is down the process stays ready and the check
+// is reported as degraded.
+func ExampleReadiness_AddDependencyCheck() {
+	readiness := lifecycle.NewReadiness()
+	readiness.AddDependencyCheck("broker", func(context.Context) error {
+		return errors.New("connection refused")
+	})
+	readiness.MarkStarted()
+
+	status, err := readiness.Ready(context.Background())
+	fmt.Printf("status=%v err=%v\n", status, err)
+	// Output:
+	// status=map[broker:degraded: connection refused] err=<nil>
+}
+
 // StopFunc releases a resource that has nothing to start. Added first, the store
 // is the last thing to stop; Workers keeps background goroutines running
 // through the drain and stops them when their turn comes.

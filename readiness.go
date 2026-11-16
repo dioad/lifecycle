@@ -114,6 +114,42 @@ func (r *Readiness) AddCheck(name string, fn CheckFunc, opts ...CheckOption) {
 	r.checks = append(r.checks, c)
 }
 
+const (
+	// DefaultDependencyCheckTimeout is how long a check added with
+	// AddDependencyCheck may run. It is below DefaultCheckTimeout on purpose:
+	// 5 seconds is also what a platform commonly allows a readiness probe
+	// (Fly's default), and a check that takes as long as the probe makes the
+	// probe time out instead of the check report degraded.
+	DefaultDependencyCheckTimeout = 2 * time.Second
+
+	// DefaultDependencyCacheTTL is how long the result of a check added with
+	// AddDependencyCheck is reused, so that frequent probes make at most one
+	// request to the dependency per interval per instance.
+	DefaultDependencyCacheTTL = 30 * time.Second
+)
+
+// AddDependencyCheck adds a named check of a dependency the process can run
+// without, such as a message broker, another service or an identity provider.
+//
+// Its failure is reported as degraded and the process stays ready. An outage
+// of a dependency is shared by every instance, so failing readiness would take
+// the whole service out of rotation without moving traffic anywhere better.
+//
+// The check runs under DefaultDependencyCheckTimeout and its result is cached
+// for DefaultDependencyCacheTTL. opts are applied after these defaults, so one
+// that sets the same thing replaces it; keep a timeout below the platform's
+// probe timeout. Nothing undoes the degraded reporting: use AddCheck for a
+// dependency the process cannot run without.
+func (r *Readiness) AddDependencyCheck(name string, fn CheckFunc, opts ...CheckOption) {
+	all := make([]CheckOption, 0, 3+len(opts))
+	all = append(all,
+		WithDegraded(),
+		WithCheckTimeout(DefaultDependencyCheckTimeout),
+		WithCacheTTL(DefaultDependencyCacheTTL),
+	)
+	r.AddCheck(name, fn, append(all, opts...)...)
+}
+
 // MarkStarted opens the start gate: from now on Ready runs the checks. App
 // does this when every service has started.
 func (r *Readiness) MarkStarted() {
