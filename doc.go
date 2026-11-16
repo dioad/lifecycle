@@ -66,6 +66,14 @@
 // reported (or WithDegraded). A check runs under a timeout (WithCheckTimeout, 5 seconds by
 // default), so a wedged dependency fails the probe instead of hanging it.
 //
+// AddDependencyCheck adds a check of a dependency the process can run without,
+// such as a broker or another service. It is degraded rather than failing,
+// because an outage of a dependency is shared by every instance and failing
+// readiness would take the whole service out of rotation without moving traffic
+// anywhere better. It runs under a 2 second timeout, below the 5 seconds a
+// platform such as Fly allows a probe, and is cached for 30 seconds; options
+// passed after the name and function replace those defaults.
+//
 // # Helpers
 //
 // StopFunc adapts a function to a Service that only has something to release on

@@ -199,6 +199,84 @@ func TestReadiness_ACheckHasTheDefaultTimeoutUnlessTold(t *testing.T) {
 	assert.WithinDuration(t, before.Add(DefaultCheckTimeout), deadline, time.Second)
 }
 
+func TestReadiness_ADependencyCheckReportsFailureAsDegraded(t *testing.T) {
+	t.Parallel()
+	r := NewReadiness()
+	r.AddDependencyCheck("broker", func(context.Context) error { return errBoom })
+	r.MarkStarted()
+
+	status, err := r.Ready(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"broker": "degraded: boom"}, status)
+}
+
+func TestReadiness_ADependencyCheckHasTheDependencyTimeoutByDefault(t *testing.T) {
+	t.Parallel()
+	var deadline time.Time
+	r := NewReadiness()
+	r.AddDependencyCheck("broker", func(ctx context.Context) error {
+		deadline, _ = ctx.Deadline()
+
+		return nil
+	})
+	r.MarkStarted()
+
+	before := time.Now()
+	_, err := r.Ready(t.Context())
+
+	require.NoError(t, err)
+	assert.WithinDuration(t, before.Add(DefaultDependencyCheckTimeout), deadline, time.Second)
+	assert.Less(t, DefaultDependencyCheckTimeout, DefaultCheckTimeout)
+}
+
+func TestReadiness_ADependencyCheckTimeoutCanBeOverriddenAndAHungCheckIsDegraded(t *testing.T) {
+	t.Parallel()
+	r := NewReadiness()
+	r.AddDependencyCheck("broker", func(ctx context.Context) error {
+		<-ctx.Done()
+
+		return ctx.Err()
+	}, WithCheckTimeout(20*time.Millisecond))
+	r.MarkStarted()
+
+	status, err := r.Ready(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"broker": "degraded: context deadline exceeded"}, status)
+}
+
+func TestReadiness_ADependencyCheckIsCachedForTheDependencyTTLByDefault(t *testing.T) {
+	t.Parallel()
+	clock := newFakeClock()
+	r := NewReadiness(WithClock(clock.Now))
+	var runs atomic.Int32
+	r.AddDependencyCheck("broker", func(context.Context) error { runs.Add(1); return nil })
+	r.MarkStarted()
+
+	_, _ = r.Ready(t.Context())
+	clock.advance(DefaultDependencyCacheTTL - time.Second)
+	_, _ = r.Ready(t.Context())
+	assert.Equal(t, int32(1), runs.Load(), "the second call is inside the TTL")
+
+	clock.advance(time.Second)
+	_, _ = r.Ready(t.Context())
+	assert.Equal(t, int32(2), runs.Load(), "the TTL has passed")
+}
+
+func TestReadiness_ADependencyCheckCacheTTLCanBeOverridden(t *testing.T) {
+	t.Parallel()
+	r := NewReadiness()
+	var runs atomic.Int32
+	r.AddDependencyCheck("broker", func(context.Context) error { runs.Add(1); return nil }, WithCacheTTL(0))
+	r.MarkStarted()
+
+	_, _ = r.Ready(t.Context())
+	_, _ = r.Ready(t.Context())
+
+	assert.Equal(t, int32(2), runs.Load())
+}
+
 func TestReadiness_WithDegradedReportsFailureWithoutFailingReadiness(t *testing.T) {
 	t.Parallel()
 	r := NewReadiness()
